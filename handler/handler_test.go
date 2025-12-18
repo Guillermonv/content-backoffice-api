@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"example.com/workflowapi/config"
 	"example.com/workflowapi/model"
 
 	"github.com/gin-gonic/gin"
@@ -30,11 +31,16 @@ func setupTestServer(t *testing.T) (*gin.Engine, *gorm.DB) {
 		t.Fatalf("auto migrating schema: %v", err)
 	}
 
+	// Configuración de prueba con JWT secret para tests
+	cfg := config.Config{
+		JWTSecret: "test-secret-key-for-testing",
+	}
+
 	r := gin.Default()
-	RegisterAgentRoutes(r, db)
-	RegisterWorkflowRoutes(r, db)
-	RegisterStepRoutes(r, db)
-	RegisterNRoutes(r, db)
+	RegisterAgentRoutes(r, db, cfg)
+	RegisterWorkflowRoutes(r, db, cfg)
+	RegisterStepRoutes(r, db, cfg)
+	RegisterNRoutes(r, db, cfg)
 
 	return r, db
 }
