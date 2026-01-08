@@ -2,12 +2,14 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"example.com/workflowapi/client"
 	"example.com/workflowapi/config"
 	"example.com/workflowapi/handler"
 	"example.com/workflowapi/model"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -27,13 +29,23 @@ func main() {
 
 	r := gin.Default()
 
-	// Rutas de autenticación (públicas)
+	// ✅ CORS CONFIG (ESTO ES CLAVE)
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"*"}, // en prod poné tu dominio
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Authorization", "Content-Type"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: false,
+		MaxAge:           12 * time.Hour,
+	}))
+
+	// ---------------- ROUTES ----------------
+
+	// Públicas
 	handler.RegisterAuthRoutes(r, db, cfg)
 
-	// Rutas de gestión de usuarios (requieren autenticación y scope users:admin)
+	// Protegidas
 	handler.RegisterUserRoutes(r, db, cfg)
-
-	// Rutas protegidas con JWT y scopes
 	handler.RegisterAgentRoutes(r, db, cfg)
 	handler.RegisterWorkflowRoutes(r, db, cfg)
 	handler.RegisterStepRoutes(r, db, cfg)
