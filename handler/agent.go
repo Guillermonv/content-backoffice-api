@@ -39,28 +39,50 @@ func RegisterAgentRoutes(r *gin.Engine, db *gorm.DB, cfg config.Config) {
         c.JSON(http.StatusCreated, a)
     })
 
-    g.PUT("/:id", middleware.RequireScopes("agents:write"), func(c *gin.Context) {
-        id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-
-        var a model.Agent
-        if err := db.First(&a, id).Error; err != nil {
-            c.JSON(http.StatusNotFound, gin.H{"error": "agent not found"})
-            return
-        }
-
-        var input model.Agent
-        if err := c.ShouldBindJSON(&input); err != nil {
-            c.JSON(http.StatusBadRequest, err)
-            return
-        }
-
-        db.Model(&a).Updates(input)
-        c.JSON(http.StatusOK, a)
-    })
-
     g.DELETE("/:id", middleware.RequireScopes("agents:write"), func(c *gin.Context) {
         id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
         db.Delete(&model.Agent{}, id)
         c.Status(http.StatusNoContent)
     })
-}
+    g.PUT("/:id", middleware.RequireScopes("agents:write"), func(c *gin.Context) {
+        // 1️⃣ parsear ID
+        id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+        if err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"error": "invalid agent id"})
+            return
+        }
+    
+        // 2️⃣ buscar existente
+        var existing model.Agent
+        if err := db.First(&existing, id).Error; err != nil {
+            c.JSON(http.StatusNotFound, gin.H{"error": "agent not found"})
+            return
+        }
+    
+        // 3️⃣ bind body
+        var input model.Agent
+        if err := c.ShouldBindJSON(&input); err != nil {
+            c.JSON(http.StatusBadRequest, err)
+            return
+        }
+    
+        // 4️⃣ update REAL (map → zero-values OK)
+        updates := map[string]interface{}{
+            "provider": input.Provider,
+            "secret":  input.Secret,
+        }
+    
+        if err := db.Model(&existing).Updates(updates).Error; err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+            return
+        }
+    
+        // 5️⃣ reload
+        if err := db.First(&existing, existing.ID).Error; err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reload agent"})
+            return
+        }
+    
+        c.JSON(http.StatusOK, existing)
+    })
+}    
