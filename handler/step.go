@@ -7,60 +7,148 @@ import (
 	"example.com/workflowapi/config"
 	"example.com/workflowapi/middleware"
 	"example.com/workflowapi/model"
-	"example.com/workflowapi/service"
+	dto "example.com/workflowapi/model/dto"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 func RegisterStepRoutes(r *gin.Engine, db *gorm.DB, cfg config.Config) {
-    g := r.Group("/steps")
-    // Aplicar autenticación JWT a todas las rutas
-    g.Use(middleware.AuthMiddleware(cfg))
+	g := r.Group("/steps")
+	g.Use(middleware.AuthMiddleware(cfg))
 
-    // Rutas de lectura requieren scope steps:read
-    g.GET("", middleware.RequireScopes("steps:read"), func(c *gin.Context) {
-        page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-        size, _ := strconv.Atoi(c.DefaultQuery("size", "10"))
+	// ======================
+	// GET /steps
+	// ======================
+	g.GET("", middleware.RequireScopes("steps:read"), func(c *gin.Context) {
+		var steps []model.Step
 
-        var list []model.Step
-        db.Scopes(service.Paginate(page, size)).Find(&list)
-        c.JSON(http.StatusOK, list)
-    })
+		if err := db.
+			Preload("Workflow").
+			Preload("Agent").
+			Find(&steps).Error; err != nil {
 
-    // Rutas de escritura requieren scope steps:write
-    g.POST("", middleware.RequireScopes("steps:write"), func(c *gin.Context) {
-        var s model.Step
-        if err := c.ShouldBindJSON(&s); err != nil {
-            c.JSON(http.StatusBadRequest, err)
-            return
-        }
-        db.Create(&s)
-        c.JSON(http.StatusCreated, s)
-    })
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 
-    g.PUT("/:id", middleware.RequireScopes("steps:write"), func(c *gin.Context) {
-        id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+		response := make([]dto.StepResponseDto, 0, len(steps))
+		for _, s := range steps {
+			response = append(response, dto.ToStepResponse(s))
+		}
 
-        var s model.Step
-        if err := db.First(&s, id).Error; err != nil {
-            c.JSON(http.StatusNotFound, gin.H{"error": "step not found"})
-            return
-        }
+		c.JSON(http.StatusOK, response)
+	})
 
-        var input model.Step
-        if err := c.ShouldBindJSON(&input); err != nil {
-            c.JSON(http.StatusBadRequest, err)
-            return
-        }
+	// ======================
+	// POST /steps
+	// ======================
+	g.POST("", middleware.RequireScopes("steps:write"), func(c *gin.Context) {
+		var input dto.StepInputDto
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, err)
+			return
+		}
 
-        db.Model(&s).Updates(input)
-        c.JSON(http.StatusOK, s)
-    })
+		// validar workflow
+		var workflow model.Workflow
+		if err := db.First(&workflow, input.WorkflowID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "workflow not found"})
+			return
+		}
 
-    g.DELETE("/:id", middleware.RequireScopes("steps:write"), func(c *gin.Context) {
-        id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-        db.Delete(&model.Step{}, id)
-        c.Status(http.StatusNoContent)
-    })
+		// validar agent
+		var agent model.Agent
+		if err := db.First(&agent, input.AgentID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "agent not found"})
+			return
+		}
+
+		step := model.Step{
+			OrderIndex:    input.OrderIndex,
+			Name:          input.Name,
+			OperationType: input.OperationType,
+			Prompt:        input.Prompt,
+			Workflow:      workflow,
+			Agent:         agent,
+		}
+
+		if err := db.Create(&step).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		db.Preload("Workflow").Preload("Agent").First(&step, step.ID)
+
+		c.JSON(http.StatusCreated, dto.ToStepResponse(step))
+	})
+
+	// ======================
+	// PUT /steps/:id
+	// ======================
+	g.PUT("/:id", middleware.RequireScopes("steps:write"), func(c *gin.Context) {
+		id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid step id"})
+			return
+		}
+
+		var existing model.Step
+		if err := db.First(&existing, id).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "step not found"})
+			return
+		}
+
+		var input dto.StepInputDto
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, err)
+			return
+		}
+
+		// validar relaciones
+		if err := db.First(&model.Workflow{}, input.WorkflowID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "workflow not found"})
+			return
+		}
+		if err := db.First(&model.Agent{}, input.AgentID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "agent not found"})
+			return
+		}
+
+		updates := map[string]interface{}{
+			"order_index":    input.OrderIndex,
+			"name":           input.Name,
+			"operation_type": input.OperationType,
+			"prompt":         input.Prompt,
+			"workflow_id":    input.WorkflowID,
+			"agent_id":       input.AgentID,
+		}
+
+		if err := db.Model(&existing).Updates(updates).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		db.Preload("Workflow").Preload("Agent").First(&existing, existing.ID)
+
+		c.JSON(http.StatusOK, dto.ToStepResponse(existing))
+	})
+
+	// ======================
+	// DELETE /steps/:id
+	// ======================
+	g.DELETE("/:id", middleware.RequireScopes("steps:write"), func(c *gin.Context) {
+		id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid step id"})
+			return
+		}
+
+		if err := db.Delete(&model.Step{}, id).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.Status(http.StatusNoContent)
+	})
 }
