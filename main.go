@@ -50,7 +50,7 @@ func main() {
 	handler.RegisterWorkflowRoutes(r, db, cfg)
 	handler.RegisterStepRoutes(r, db, cfg)
 	handler.RegisterStepExecutionRoutes(r, db, cfg)
-	handler.RegisterNRoutes(r, db, cfg)
+	handler.RegisterContentReviewRoutes(r, db, cfg)
 
 	log.Fatal(r.Run(":8080"))
 }
