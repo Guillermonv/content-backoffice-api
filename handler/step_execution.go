@@ -8,7 +8,6 @@ import (
 	"example.com/workflowapi/config"
 	"example.com/workflowapi/middleware"
 	"example.com/workflowapi/model"
-	"example.com/workflowapi/service"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -19,67 +18,66 @@ func RegisterStepExecutionRoutes(r *gin.Engine, db *gorm.DB, cfg config.Config) 
 	g.Use(middleware.AuthMiddleware(cfg))
 
 	// =========================
-	// GET: List grouped step executions (DESC)
+	// GET: List grouped step executions
 	// =========================
 	g.GET("", middleware.RequireScopes("step-executions:read"), func(c *gin.Context) {
 
-		query := db.Model(&model.StepExecution{})
+		query := db.
+			Model(&model.StepExecution{}).
+			Joins("JOIN executions ON executions.id = step_executions.execution_id").
+			Joins("JOIN workflows ON workflows.id = executions.workflow_id")
 
-		var err error
-		query, err = service.ApplyStepExecutionFilters(query, c)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid query parameter"})
-			return
+		// ===== filters =====
+		if status := c.Query("status"); status != "" {
+			query = query.Where("executions.status = ?", status)
 		}
 
-		// ===== Date range filter (created_at) =====
-		fromStr := c.Query("from")
-		toStr := c.Query("to")
+		if name := c.Query("name"); name != "" {
+			query = query.Where(
+				"LOWER(workflows.name) LIKE LOWER(?)",
+				"%"+name+"%",
+			)
+		}
 
-		if fromStr != "" {
-			fromTime, err := time.Parse(time.RFC3339, fromStr)
+		// ===== date range =====
+		if from := c.Query("from"); from != "" {
+			t, err := time.Parse(time.RFC3339, from)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": "Invalid 'from' datetime. Use RFC3339 format",
-				})
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid from"})
 				return
 			}
-			query = query.Where("step_executions.created_at >= ?", fromTime)
+			query = query.Where("step_executions.created_at >= ?", t)
 		}
 
-		if toStr != "" {
-			toTime, err := time.Parse(time.RFC3339, toStr)
+		if to := c.Query("to"); to != "" {
+			t, err := time.Parse(time.RFC3339, to)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": "Invalid 'to' datetime. Use RFC3339 format",
-				})
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid to"})
 				return
 			}
-			query = query.Where("step_executions.created_at <= ?", toTime)
+			query = query.Where("step_executions.created_at <= ?", t)
 		}
 
+		// ===== fetch =====
 		var list []model.StepExecution
 		if err := query.
 			Preload("Execution").
 			Preload("Execution.Workflow").
 			Preload("Step").
-			Order("execution_id DESC, id DESC").
+			Order("step_executions.execution_id DESC, step_executions.id DESC").
 			Find(&list).Error; err != nil {
 
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to fetch step executions",
-			})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 			return
 		}
 
-		// ===== Group by execution_id (DESC preserved) =====
-		groups := make(map[uint64]*model.StepExecutionGroupResponse)
-		order := make([]uint64, 0)
+		// ===== group =====
+		groups := map[uint64]*model.StepExecutionGroupResponse{}
+		order := []uint64{}
 
 		for _, se := range list {
-			group, exists := groups[se.ExecutionID]
-			if !exists {
-				group = &model.StepExecutionGroupResponse{
+			if _, ok := groups[se.ExecutionID]; !ok {
+				groups[se.ExecutionID] = &model.StepExecutionGroupResponse{
 					ExecutionID: se.ExecutionID,
 					Execution: model.ExecutionResponse{
 						ID:     se.Execution.ID,
@@ -92,46 +90,48 @@ func RegisterStepExecutionRoutes(r *gin.Engine, db *gorm.DB, cfg config.Config) 
 					},
 					Steps: []model.StepExecution{},
 				}
-				groups[se.ExecutionID] = group
 				order = append(order, se.ExecutionID)
 			}
-
-			group.Steps = append(group.Steps, se)
+			groups[se.ExecutionID].Steps = append(
+				groups[se.ExecutionID].Steps,
+				se,
+			)
 		}
 
-		response := make([]model.StepExecutionGroupResponse, 0, len(order))
-		for _, executionID := range order {
-			response = append(response, *groups[executionID])
+		resp := make([]model.StepExecutionGroupResponse, 0, len(order))
+		for _, id := range order {
+			resp = append(resp, *groups[id])
 		}
 
-		c.JSON(http.StatusOK, response)
+		c.JSON(http.StatusOK, resp)
 	})
 
 	// =========================
 	// PUT: Update step execution by ID
 	// =========================
 	g.PUT("", middleware.RequireScopes("step-executions:write"), func(c *gin.Context) {
-		executionIDStr := c.Query("id")
-		if executionIDStr == "" {
+
+		idStr := c.Query("id")
+		if idStr == "" {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "execution_id query parameter is required",
+				"error": "id query parameter is required",
 			})
 			return
 		}
 
-		stepExecutionID, err := strconv.ParseUint(executionIDStr, 10, 64)
+		id, err := strconv.ParseUint(idStr, 10, 64)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Invalid execution_id. Must be a number",
+				"error": "Invalid id",
 			})
 			return
 		}
 
 		var se model.StepExecution
-		if err := db.Where("id = ?", stepExecutionID).First(&se).Error; err != nil {
+		if err := db.First(&se, id).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
 				c.JSON(http.StatusNotFound, gin.H{
-					"error": "Step execution not found for the given id",
+					"error": "Step execution not found",
 				})
 				return
 			}
@@ -141,134 +141,33 @@ func RegisterStepExecutionRoutes(r *gin.Engine, db *gorm.DB, cfg config.Config) 
 			return
 		}
 
-		var jsonData map[string]interface{}
-		if err := c.ShouldBindJSON(&jsonData); err != nil {
+		var payload map[string]interface{}
+		if err := c.ShouldBindJSON(&payload); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": err.Error(),
 			})
 			return
 		}
 
-		updateFields := make(map[string]interface{})
+		updates := map[string]interface{}{}
 
-		if statusValue, exists := jsonData["status"]; exists && statusValue != nil {
-			if statusStr, ok := statusValue.(string); ok && statusStr != "" {
-				updateFields["status"] = statusStr
-			}
+		if v, ok := payload["status"].(string); ok && v != "" {
+			updates["status"] = v
+		}
+		if v, ok := payload["output"].(string); ok {
+			updates["output"] = v
 		}
 
-		if outputValue, exists := jsonData["output"]; exists && outputValue != nil {
-			if outputStr, ok := outputValue.(string); ok {
-				updateFields["output"] = outputStr
-			}
-		}
-
-		if len(updateFields) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "No valid fields to update. Expected 'status' or 'output'",
-			})
-			return
-		}
-
-		if err := db.Model(&se).Updates(updateFields).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":   "Failed to update step execution",
-				"details": err.Error(),
-			})
-			return
-		}
-
-		db.Preload("Step").Preload("Execution").First(&se, se.ID)
-		c.JSON(http.StatusOK, se)
-	})
-
-	// =========================
-	// PATCH: Partial update by execution_id / step_id
-	// =========================
-	g.PATCH("", middleware.RequireScopes("step-executions:write"), func(c *gin.Context) {
-		executionIDStr := c.Query("execution_id")
-		if executionIDStr == "" {
-			executionIDStr = c.Query("executionId")
-		}
-
-		stepIDStr := c.Query("step_id")
-		if stepIDStr == "" {
-			stepIDStr = c.Query("stepId")
-		}
-
-		if executionIDStr == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "execution_id query parameter is required",
-			})
-			return
-		}
-
-		executionID, err := strconv.ParseUint(executionIDStr, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Invalid execution_id. Must be a number",
-			})
-			return
-		}
-
-		query := db.Where("execution_id = ?", executionID)
-
-		if stepIDStr != "" {
-			stepID, err := strconv.ParseUint(stepIDStr, 10, 64)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": "Invalid step_id. Must be a number",
-				})
-				return
-			}
-			query = query.Where("step_id = ?", stepID)
-		}
-
-		var se model.StepExecution
-		if err := query.First(&se).Error; err != nil {
-			if err == gorm.ErrRecordNotFound {
-				c.JSON(http.StatusNotFound, gin.H{
-					"error": "Step execution not found for the given execution_id and step_id",
-				})
-				return
-			}
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Database error",
-			})
-			return
-		}
-
-		var updateData map[string]interface{}
-		if err := c.ShouldBindJSON(&updateData); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": err.Error(),
-			})
-			return
-		}
-
-		allowedFields := map[string]bool{
-			"status": true,
-			"output": true,
-		}
-
-		updateFields := make(map[string]interface{})
-		for key, value := range updateData {
-			if allowedFields[key] && value != nil {
-				updateFields[key] = value
-			}
-		}
-
-		if len(updateFields) == 0 {
+		if len(updates) == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": "No valid fields to update",
 			})
 			return
 		}
 
-		if err := db.Model(&se).Updates(updateFields).Error; err != nil {
+		if err := db.Model(&se).Updates(updates).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":   "Failed to update step execution",
-				"details": err.Error(),
+				"error": "Failed to update step execution",
 			})
 			return
 		}
