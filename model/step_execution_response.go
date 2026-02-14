@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 type WorkflowResponse struct {
 	ID          uint64 `json:"id"`
 	Name        string `json:"name"`
@@ -16,4 +18,5 @@ type StepExecutionGroupResponse struct {
 	ExecutionID uint64            `json:"execution_id"`
 	Execution   ExecutionResponse `json:"execution"`
 	Steps       []StepExecution   `json:"steps"`
+	Created     time.Time         `json:"created_at"`
 }

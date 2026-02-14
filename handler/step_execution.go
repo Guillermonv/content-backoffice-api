@@ -115,7 +115,8 @@ func RegisterStepExecutionRoutes(r *gin.Engine, db *gorm.DB, cfg config.Config) 
 							Description: se.Execution.Workflow.Description,
 						},
 					},
-					Steps: []model.StepExecution{},
+					Created: se.CreatedAt,
+					Steps:   []model.StepExecution{},
 				}
 				order = append(order, se.ExecutionID)
 			}
