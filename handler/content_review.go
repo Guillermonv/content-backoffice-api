@@ -68,4 +68,64 @@ func RegisterContentReviewRoutes(r *gin.Engine, db *gorm.DB, cfg config.Config) 
 
 		c.JSON(http.StatusOK, response)
 	})
+	g.PUT("/:id", middleware.RequireScopes("content-reviews:write"), func(c *gin.Context) {
+		var entity model.N
+
+		// 1️⃣ Obtener ID de la URL
+		id := c.Param("id")
+
+		// 2️⃣ Buscar registro existente
+		if err := db.First(&entity, id).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				c.JSON(http.StatusNotFound, gin.H{"error": "content review not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		// 3️⃣ Bind JSON de entrada
+		var input ContentReview
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		// 4️⃣ Actualizar campos permitidos
+		entity.Title = input.Title
+		entity.ShortDescription = input.ShortDescription
+		entity.Message = input.Message
+		entity.Status = input.Status
+		entity.Type = input.Type
+		entity.SubType = input.SubType
+		entity.Category = input.Category
+		entity.SubCategory = input.SubCategory
+		entity.ImageURL = input.ImageURL
+		entity.ImagePrompt = input.ImagePrompt
+		entity.LastUpdated = time.Now()
+
+		// 5️⃣ Guardar cambios
+		if err := db.Save(&entity).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		// 6️⃣ Responder actualizado
+		c.JSON(http.StatusOK, ContentReview{
+			ID:               entity.ID,
+			ExecutionID:      entity.ExecutionID,
+			Title:            entity.Title,
+			ShortDescription: entity.ShortDescription,
+			Message:          entity.Message,
+			Status:           entity.Status,
+			Type:             entity.Type,
+			SubType:          entity.SubType,
+			Category:         entity.Category,
+			SubCategory:      entity.SubCategory,
+			ImageURL:         entity.ImageURL,
+			ImagePrompt:      entity.ImagePrompt,
+			CreatedAt:        entity.Created,
+			UpdatedAt:        entity.LastUpdated,
+		})
+	})
 }
